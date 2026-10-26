@@ -1,8 +1,12 @@
-name: Test Report
+name: Assignment 2 Feedback & Screenshot Report
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
 
 jobs:
   test-report:
@@ -14,850 +18,932 @@ jobs:
         image: mongo:7
         ports:
           - 27017:27017
-        env:
-          MONGO_INITDB_DATABASE: bookingsDB
         options: >-
           --health-cmd "mongosh --eval 'db.adminCommand(\"ping\")'"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 30
+          --health-retries 10
 
     steps:
-      # ── Stage 1: Setup ──────────────────────────────────────
-      - name: Checkout code
+      # ── Stage 1: Checkout & Project Layout Detection ──────────────────────
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 20
+      - name: Setup Node.js 22
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Install dependencies
-        working-directory: backend
-        run: npm ci
-
-      # ── Wait for MongoDB ────────────────────────────────
-      - name: Wait for MongoDB
+      - name: Detect Backend & Frontend Directories
+        id: dirs
         run: |
-          for i in $(seq 1 60); do
-            if nc -z localhost 27017 2>/dev/null; then
-              echo "MongoDB ready"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "MongoDB did not start within 60s"
-          exit 1
+          if [ -f "backend/package.json" ]; then
+            BACKEND_DIR="backend"
+          elif [ -f "package.json" ]; then
+            BACKEND_DIR="."
+          else
+            echo "::error::Could not find backend package.json in root or backend/"
+            exit 1
+          fi
 
-      - name: Seed MongoDB
-        working-directory: backend
+          if [ -f "frontend/package.json" ]; then
+            FRONTEND_DIR="frontend"
+            HAS_FRONTEND="true"
+          else
+            FRONTEND_DIR="frontend"
+            HAS_FRONTEND="false"
+            echo "::warning::frontend/package.json not found! Assignment 2 requires the Vue 3 SPA inside frontend/."
+          fi
+
+          echo "backend_dir=$BACKEND_DIR" >> "$GITHUB_OUTPUT"
+          echo "frontend_dir=$FRONTEND_DIR" >> "$GITHUB_OUTPUT"
+          echo "has_frontend=$HAS_FRONTEND" >> "$GITHUB_OUTPUT"
+          mkdir -p /home/runner/report-artifact/screenshots
+
+      - name: Install Backend Dependencies
+        working-directory: ${{ steps.dirs.outputs.backend_dir }}
+        run: npm ci || npm install
+
+      - name: Install Frontend Dependencies
+        if: steps.dirs.outputs.has_frontend == 'true'
+        working-directory: ${{ steps.dirs.outputs.frontend_dir }}
+        run: npm ci || npm install
+
+      # ── Stage 2: Seed MongoDB with Deterministic IDs ──────────────────────
+      - name: Seed MongoDB (Events & Venues)
+        working-directory: ${{ steps.dirs.outputs.backend_dir }}
         run: |
           node <<'SEED'
           const { MongoClient, ObjectId } = require('mongodb');
+
           async function seed() {
             const client = new MongoClient('mongodb://localhost:27017');
             await client.connect();
             const db = client.db('bookingsDB');
-            // Clear existing data
+
             const collections = await db.listCollections().toArray();
             for (const c of collections) {
               await db.collection(c.name).deleteMany({});
             }
-            // Seed events
-            const events = [
-              {
-                title: 'AI Workshop',
-                description: 'Introduction to AI concepts',
-                category: 'Workshop',
-                speaker: 'Dr. Smith',
-                dateTime: new Date('2026-10-15T10:00:00Z'),
-                venue: new ObjectId('507f1f77bcf86cd799439011'),
-                capacity: 50,
-                status: 'Upcoming',
-                isHighlighted: true,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              },
-              {
-                title: 'Data Science Seminar',
-                description: 'Advanced data analytics',
-                category: 'Seminar',
-                speaker: 'Prof. Johnson',
-                dateTime: new Date('2026-10-20T14:00:00Z'),
-                venue: new ObjectId('507f1f77bcf86cd799439012'),
-                capacity: 100,
-                status: 'Upcoming',
-                isHighlighted: true,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              },
-              {
-                title: 'Web Dev Bootcamp',
-                description: 'Full-stack development',
-                category: 'Workshop',
-                speaker: 'Ms. Lee',
-                dateTime: new Date('2026-10-25T09:00:00Z'),
-                venue: new ObjectId('507f1f77bcf86cd799439013'),
-                capacity: 30,
-                status: 'Ongoing',
-                isHighlighted: false,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              },
-              {
-                title: 'Cybersecurity Talk',
-                description: 'Security best practices',
-                category: 'Talk',
-                speaker: 'Mr. Brown',
-                dateTime: new Date('2026-11-01T13:00:00Z'),
-                venue: new ObjectId('507f1f77bcf86cd799439014'),
-                capacity: 80,
-                status: 'Upcoming',
-                isHighlighted: true,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              },
-              {
-                title: 'Cloud Computing Lab',
-                description: 'AWS and Azure fundamentals',
-                category: 'Lab',
-                speaker: 'Dr. Wang',
-                dateTime: new Date('2026-11-05T11:00:00Z'),
-                venue: new ObjectId('507f1f77bcf86cd799439015'),
-                capacity: 40,
-                status: 'Upcoming',
-                isHighlighted: false,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              },
-              {
-                title: 'Machine Learning Conference',
-                description: 'ML algorithms and applications',
-                category: 'Conference',
-                speaker: 'Prof. Davis',
-                dateTime: new Date('2026-09-20T10:00:00Z'),
-                venue: new ObjectId('507f1f77bcf86cd799439016'),
-                capacity: 200,
-                status: 'Completed',
-                isHighlighted: true,
-                createdAt: new Date(),
-                updatedAt: new Date()
-              }
-            ];
-            await db.collection('events').insertMany(events);
-            // Seed venues
+
             const venues = [
               {
+                _id: new ObjectId('507f1f77bcf86cd799439011'),
                 name: 'Main Auditorium',
                 location: 'Building A, Floor 1',
                 capacity: 200,
                 facilities: ['Projector', 'Microphone', 'Wi-Fi'],
-                description: 'Large auditorium for conferences',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                description: 'Large auditorium for campus-wide conferences and keynotes.',
+                createdAt: new Date('2026-09-01T08:00:00Z'),
+                updatedAt: new Date('2026-09-01T08:00:00Z')
               },
               {
+                _id: new ObjectId('507f1f77bcf86cd799439012'),
                 name: 'Seminar Room 1',
                 location: 'Building B, Floor 2',
                 capacity: 50,
                 facilities: ['Whiteboard', 'Wi-Fi'],
-                description: 'Small seminar room',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                description: 'Interactive seminar room ideal for academic discussions.',
+                createdAt: new Date('2026-09-02T08:00:00Z'),
+                updatedAt: new Date('2026-09-02T08:00:00Z')
               },
               {
-                name: 'Computer Lab',
+                _id: new ObjectId('507f1f77bcf86cd799439013'),
+                name: 'Computer Lab 304',
                 location: 'Building C, Floor 3',
                 capacity: 40,
                 facilities: ['Computers', 'Wi-Fi', 'Printer'],
-                description: 'Computer lab with workstations',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                description: 'Software engineering laboratory with dual-monitor workstations.',
+                createdAt: new Date('2026-09-03T08:00:00Z'),
+                updatedAt: new Date('2026-09-03T08:00:00Z')
               },
               {
-                name: 'Lecture Hall',
+                _id: new ObjectId('507f1f77bcf86cd799439014'),
+                name: 'Lecture Hall 2',
                 location: 'Building A, Floor 3',
                 capacity: 150,
                 facilities: ['Projector', 'Microphone', 'Recording'],
-                description: 'Lecture hall with recording facilities',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                description: 'Tiered lecture theatre with lecture capture equipment.',
+                createdAt: new Date('2026-09-04T08:00:00Z'),
+                updatedAt: new Date('2026-09-04T08:00:00Z')
               },
               {
-                name: 'Meeting Room',
+                _id: new ObjectId('507f1f77bcf86cd799439015'),
+                name: 'Innovation Hub',
                 location: 'Building B, Floor 1',
-                capacity: 20,
-                facilities: ['Whiteboard', 'Wi-Fi'],
-                description: 'Small meeting room',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                capacity: 35,
+                facilities: ['Whiteboard', 'Wi-Fi', 'Smart TV'],
+                description: 'Collaborative space for student project pitches.',
+                createdAt: new Date('2026-09-05T08:00:00Z'),
+                updatedAt: new Date('2026-09-05T08:00:00Z')
               },
               {
-                name: 'Workshop Bay',
+                _id: new ObjectId('507f1f77bcf86cd799439016'),
+                name: 'Robotics Workshop Bay',
                 location: 'Building D, Ground Floor',
                 capacity: 30,
                 facilities: ['Workbenches', 'Tools', 'Wi-Fi'],
-                description: 'Workshop space for hands-on activities',
-                createdAt: new Date(),
-                updatedAt: new Date()
+                description: 'Hands-on fabrication and robotics testing arena.',
+                createdAt: new Date('2026-09-06T08:00:00Z'),
+                updatedAt: new Date('2026-09-06T08:00:00Z')
               }
             ];
             await db.collection('venues').insertMany(venues);
+
+            const events = [
+              {
+                _id: new ObjectId('507f1f77bcf86cd799439021'),
+                title: 'AI & Multimodal Systems Workshop',
+                description: 'Hands-on introduction to generative AI and agent workflows.',
+                bannerImage: 'https://picsum.photos/seed/event1/800/400',
+                category: 'Workshop',
+                speaker: 'Dr. Smith',
+                dateTime: new Date('2026-11-15T10:00:00Z'),
+                venue: new ObjectId('507f1f77bcf86cd799439011'),
+                capacity: 50,
+                status: 'Upcoming',
+                isHighlighted: true,
+                viewCount: 120,
+                createdAt: new Date('2026-10-01T10:00:00Z'),
+                updatedAt: new Date('2026-10-01T10:00:00Z')
+              },
+              {
+                _id: new ObjectId('507f1f77bcf86cd799439022'),
+                title: 'Data Science & Analytics Seminar',
+                description: 'Modern pipelines for real-time big data analytics.',
+                bannerImage: 'https://picsum.photos/seed/event2/800/400',
+                category: 'Seminar',
+                speaker: 'Prof. Johnson',
+                dateTime: new Date('2026-11-20T14:00:00Z'),
+                venue: new ObjectId('507f1f77bcf86cd799439012'),
+                capacity: 100,
+                status: 'Upcoming',
+                isHighlighted: true,
+                viewCount: 95,
+                createdAt: new Date('2026-10-02T10:00:00Z'),
+                updatedAt: new Date('2026-10-02T10:00:00Z')
+              },
+              {
+                _id: new ObjectId('507f1f77bcf86cd799439023'),
+                title: 'Vue 3 Composition API Bootcamp',
+                description: 'Full-stack SPA architecture with Express and Vue 3.',
+                bannerImage: 'https://picsum.photos/seed/event3/800/400',
+                category: 'Workshop',
+                speaker: 'Ms. Lee',
+                dateTime: new Date('2026-11-25T09:00:00Z'),
+                venue: new ObjectId('507f1f77bcf86cd799439013'),
+                capacity: 30,
+                status: 'Ongoing',
+                isHighlighted: false,
+                viewCount: 150,
+                createdAt: new Date('2026-10-03T10:00:00Z'),
+                updatedAt: new Date('2026-10-03T10:00:00Z')
+              },
+              {
+                _id: new ObjectId('507f1f77bcf86cd799439024'),
+                title: 'Cybersecurity Best Practices Talk',
+                description: 'Securing web APIs, tokens, and cloud deployments.',
+                bannerImage: 'https://picsum.photos/seed/event4/800/400',
+                category: 'Talk',
+                speaker: 'Mr. Brown',
+                dateTime: new Date('2026-12-01T13:00:00Z'),
+                venue: new ObjectId('507f1f77bcf86cd799439014'),
+                capacity: 80,
+                status: 'Upcoming',
+                isHighlighted: true,
+                viewCount: 80,
+                createdAt: new Date('2026-10-04T10:00:00Z'),
+                updatedAt: new Date('2026-10-04T10:00:00Z')
+              },
+              {
+                _id: new ObjectId('507f1f77bcf86cd799439025'),
+                title: 'Cloud Native Kubernetes Lab',
+                description: 'Deploying containerized microservices on Kubernetes.',
+                bannerImage: 'https://picsum.photos/seed/event5/800/400',
+                category: 'Lab',
+                speaker: 'Dr. Wang',
+                dateTime: new Date('2026-12-05T11:00:00Z'),
+                venue: new ObjectId('507f1f77bcf86cd799439015'),
+                capacity: 40,
+                status: 'Upcoming',
+                isHighlighted: false,
+                viewCount: 60,
+                createdAt: new Date('2026-10-05T10:00:00Z'),
+                updatedAt: new Date('2026-10-05T10:00:00Z')
+              },
+              {
+                _id: new ObjectId('507f1f77bcf86cd799439026'),
+                title: 'Autonomous Robotics Symposium',
+                description: 'Embedded control, swerve kinematics, and vision systems.',
+                bannerImage: 'https://picsum.photos/seed/event6/800/400',
+                category: 'Conference',
+                speaker: 'Prof. Davis',
+                dateTime: new Date('2026-10-10T10:00:00Z'),
+                venue: new ObjectId('507f1f77bcf86cd799439016'),
+                capacity: 200,
+                status: 'Completed',
+                isHighlighted: true,
+                viewCount: 210,
+                createdAt: new Date('2026-10-06T10:00:00Z'),
+                updatedAt: new Date('2026-10-06T10:00:00Z')
+              }
+            ];
+            await db.collection('events').insertMany(events);
             await client.close();
-            console.log('Seeded 6 events and 6 venues');
+            console.log('Seeded 6 venues and 6 events with deterministic ObjectIds.');
           }
           seed().catch(e => { console.error('Seed error:', e); process.exit(1); });
           SEED
 
-      - name: Start Express server
-        id: server
-        working-directory: backend
+      # ── Stage 3: Start Express Backend & Vue 3 Frontend ───────────────────
+      - name: Start Express Backend Server (Port 3000)
+        id: backend_server
+        working-directory: ${{ steps.dirs.outputs.backend_dir }}
         run: |
-          PORT=3000 MONGODB_URI=mongodb://localhost:27017 node ./bin/www &
-          SERVER_PID=$!
-          echo "server_pid=$SERVER_PID" >> $GITHUB_OUTPUT
-          # Poll until ready
-          READY=false
+          PORT=3000 MONGODB_URI=mongodb://localhost:27017 node ./bin/www > /home/runner/backend.log 2>&1 &
+          echo "pid=$!" >> "$GITHUB_OUTPUT"
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:3000/ > /dev/null 2>&1; then
-              READY=true
-              break
+            if curl -sf http://localhost:3000/api/events > /dev/null 2>&1 || curl -sf http://localhost:3000/ > /dev/null 2>&1; then
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              echo "Express backend listening on http://localhost:3000"
+              exit 0
             fi
             sleep 1
           done
-          echo "ready=$READY" >> $GITHUB_OUTPUT
-          if [ "$READY" != "true" ]; then
-            echo "Server did not start within 30s"
-            exit 1
-          fi
+          echo "::warning::Express server did not respond on port 3000 within 30s"
+          cat /home/runner/backend.log || true
+          echo "ready=false" >> "$GITHUB_OUTPUT"
 
-      # ── Stage 3: Unit Tests ─────────────────────────────────
-      - name: Run Unit Tests
-        id: unit
-        working-directory: backend
+      - name: Start Vue 3 Vite Server (Port 5173)
+        id: frontend_server
+        if: steps.dirs.outputs.has_frontend == 'true'
+        working-directory: ${{ steps.dirs.outputs.frontend_dir }}
+        run: |
+          npx vite --host 0.0.0.0 --port 5173 > /home/runner/frontend.log 2>&1 &
+          echo "pid=$!" >> "$GITHUB_OUTPUT"
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:5173/ > /dev/null 2>&1; then
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+              echo "app_url=http://localhost:5173" >> "$GITHUB_OUTPUT"
+              echo "Vue 3 Vite dev server listening on http://localhost:5173"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::warning::Vite server did not start on port 5173 within 30s; falling back to http://localhost:3000"
+          cat /home/runner/frontend.log || true
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+          echo "app_url=http://localhost:3000" >> "$GITHUB_OUTPUT"
+
+      # ── Stage 4: Static Code & Lab 5/6 Compliance Checks ──────────────────
+      - name: Run Static & Composition API Compliance Tests
+        id: static_checks
+        continue-on-error: true
         run: |
           node <<'SCRIPT'
-          const assert = require('assert');
-          const path = require('path');
           const fs = require('fs');
+          const path = require('path');
 
           const results = [];
           function test(name, fn) {
             try { fn(); results.push({ name, pass: true }); }
             catch (e) { results.push({ name, pass: false, error: e.message }); }
           }
-          const APP_DIR = process.cwd();
 
-          // Module loadability
-          test('app module loads', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            assert.ok(app, 'app should load');
-          });
-          test('db module loads', () => {
-            const db = require(path.join(APP_DIR, 'utils/db'));
-            assert.ok(db, 'db should load');
-          });
-          test('routes/index module loads', () => {
-            const r = require(path.join(APP_DIR, 'routes/index'));
-            assert.ok(r, 'routes/index should load');
-          });
-          test('routes/users module loads', () => {
-            const r = require(path.join(APP_DIR, 'routes/users'));
-            assert.ok(r, 'routes/users should load');
-          });
+          const rootDir = process.cwd();
+          const frontendDir = path.join(rootDir, 'frontend');
+          const frontendSrc = path.join(frontendDir, 'src');
 
-          // App instance type and methods
-          test('app is an Express application instance', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            assert.strictEqual(typeof app, 'object', 'app should be an object');
-            assert.strictEqual(typeof app.get, 'function', 'app.get should be a function');
-            assert.strictEqual(typeof app.use, 'function', 'app.use should be a function');
-            assert.strictEqual(typeof app.set, 'function', 'app.set should be a function');
-            assert.strictEqual(typeof app.listen, 'function', 'app.listen should be a function');
-          });
-
-          // DB module exports
-          test('db exports connectToDB function', () => {
-            const db = require(path.join(APP_DIR, 'utils/db'));
-            assert.strictEqual(typeof db.connectToDB, 'function', 'connectToDB should be a function');
-          });
-          test('db exports ObjectId', () => {
-            const db = require(path.join(APP_DIR, 'utils/db'));
-            assert.strictEqual(typeof db.ObjectId, 'function', 'ObjectId should be a function');
-          });
-
-          // View engine
-          test('view engine is ejs', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            assert.strictEqual(app.get('view engine'), 'ejs', 'view engine should be ejs');
-          });
-          test('views directory is set', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const viewsPath = app.get('views');
-            assert.ok(viewsPath, 'views path should be set');
-            assert.ok(fs.existsSync(viewsPath), 'views directory should exist');
-          });
-
-          // Middleware presence - inspect router stack for known middleware
-          test('JSON middleware is used', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const stack = app._router.stack;
-            const hasJson = stack.some(layer => {
-              const name = layer.name || '';
-              return name === 'json parser' || (layer.handle && layer.handle.toString().includes('Express JSON'));
-            });
-            assert.ok(hasJson, 'JSON middleware should be registered');
-          });
-          test('URL-encoded middleware is used', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const stack = app._router.stack;
-            const hasUrlencoded = stack.some(layer => {
-              const name = layer.name || '';
-              return name === 'urlencoded parser' || (layer.handle && layer.handle.toString().includes('Extended URL'));
-            });
-            assert.ok(hasUrlencoded, 'URL-encoded middleware should be registered');
-          });
-          test('cookie-parser middleware is used', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const stack = app._router.stack;
-            const hasCookie = stack.some(layer => {
-              const name = layer.name || '';
-              return name.includes('cookie') || name.includes('Cookie') || (layer.handle && layer.handle.toString().includes('cookie'));
-            });
-            assert.ok(hasCookie, 'cookie-parser middleware should be registered');
-          });
-          test('static middleware is used', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            assert.ok(app._router, 'app should have a router with static middleware');
-          });
-
-          // Route mounts
-          test('GET / route is mounted', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const routes = app._router.stack
-              .filter(layer => layer.route)
-              .map(layer => layer.route.path);
-            assert.ok(routes.includes('/'), 'route / should be mounted');
-          });
-          test('GET /users route is mounted', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const routes = app._router.stack
-              .filter(layer => layer.route)
-              .map(layer => layer.route.path);
-            assert.ok(routes.includes('/users'), 'route /users should be mounted');
-          });
-
-          // Error handlers
-          test('404 handler exists', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const stack = app._router.stack;
-            const has404 = stack.some(layer => {
-              if (layer.route) return false;
-              const handler = layer.handle;
-              return handler && handler.length >= 4;
-            });
-            assert.ok(has404, '404 handler should exist');
-          });
-          test('error handler exists', () => {
-            const app = require(path.join(APP_DIR, 'app'));
-            const stack = app._router.stack;
-            const errorHandlers = stack.filter(layer => {
-              if (layer.route) return false;
-              const handler = layer.handle;
-              return handler && handler.length >= 4;
-            });
-            assert.ok(errorHandlers.length > 0, 'error handler should exist');
-          });
-
-          const passed = results.filter(r => r.pass).length;
-          const total = results.length;
-          let md = '## Unit Tests\n\n';
-          md += '| Test | Result |\n|------|--------|\n';
-          for (const r of results) {
-            md += `| ${r.name} | ${r.pass ? 'PASS' : 'FAIL: ' + r.error} |\n`;
+          function getFiles(dir, exts) {
+            let out = [];
+            if (!fs.existsSync(dir)) return out;
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) out = out.concat(getFiles(full, exts));
+              else if (exts.some(ext => entry.name.endsWith(ext))) out.push(full);
+            }
+            return out;
           }
-          md += `\n**${passed}/${total} tests passed**\n`;
 
-          // DB Analysis Section
-          const dbAnalysis = [];
-          try {
-            const dbContent = fs.readFileSync(path.join(APP_DIR, 'utils/db.js'), 'utf8');
-            const hasUriVar = dbContent.includes('MONGODB_URI') || dbContent.includes('process.env');
-            const hasLocalhost = dbContent.includes('localhost') || dbContent.includes('127.0.0.1');
-            const hasEnvCheck = dbContent.match(/process\.env\.MONGODB_URI/);
-            const hasOverride = dbContent.includes("'your_mongodb_uri'");
-            dbAnalysis.push(`- **MONGODB_URI variable**: ${hasUriVar ? 'Present' : 'Missing'}`);
-            dbAnalysis.push(`- **Environment variable check**: ${hasEnvCheck ? 'Yes' : 'No'}`);
-            dbAnalysis.push(`- **Default to localhost**: ${hasLocalhost ? 'Yes' : 'No'}`);
-            dbAnalysis.push(`- **Hardcoded override**: ${hasOverride ? 'WARNING: Overrides env var' : 'None'}`);
-          } catch(e) {
-            dbAnalysis.push('- **Analysis**: Could not read db.js');
-          }
-          md += '\n### Database Analysis\n\n';
-          md += dbAnalysis.join('\n');
-          md += '\n';
+          const vueFiles = getFiles(frontendSrc, ['.vue']);
+          const allFrontendFiles = getFiles(frontendSrc, ['.vue', '.js', '.ts']);
+          const combinedVue = vueFiles.map(f => fs.readFileSync(f, 'utf8')).join('\n');
+          const combinedFrontend = allFrontendFiles.map(f => fs.readFileSync(f, 'utf8')).join('\n');
 
-          fs.writeFileSync('/home/runner/unit-results.md', md);
-          console.log('unit-passed=' + passed);
-          console.log('unit-total=' + total);
+          test('frontend/ directory and package.json exist', () => {
+            if (!fs.existsSync(path.join(frontendDir, 'package.json'))) {
+              throw new Error('frontend/package.json is missing');
+            }
+          });
 
-          // DB Connectivity Check (synchronous shell command)
-          const { execSync } = require('child_process');
-          let dbStatus = 'FAIL (MongoDB not reachable)';
-          try {
-            execSync('nc -z 127.0.0.1 27017', { timeout: 5000 });
-            dbStatus = 'PASS (MongoDB reachable on port 27017)';
-          } catch (e) { /* connection failed */ }
-          let content = fs.readFileSync('/home/runner/unit-results.md', 'utf8');
-          content += '\n### Database Connectivity\n\n';
-          content += `- **Connection test**: ${dbStatus}\n`;
-          fs.writeFileSync('/home/runner/unit-results.md', content);
-          process.exit(0);
+          test('Vite proxy config for /api exists in vite.config.*', () => {
+            const cfgCandidates = ['vite.config.js', 'vite.config.ts', 'vite.config.mjs']
+              .map(f => path.join(frontendDir, f))
+              .filter(f => fs.existsSync(f));
+            if (cfgCandidates.length === 0) throw new Error('No vite.config.* found in frontend/');
+            const cfgContent = fs.readFileSync(cfgCandidates[0], 'utf8');
+            if (!cfgContent.includes('proxy') || !cfgContent.includes('/api')) {
+              throw new Error('vite.config does not configure server.proxy for /api');
+            }
+          });
 
+          test('Uses <script setup> in Vue components', () => {
+            if (vueFiles.length === 0) throw new Error('No .vue files found in frontend/src');
+            if (!combinedVue.includes('<script setup')) {
+              throw new Error('No <script setup> found in .vue files');
+            }
+          });
+
+          test('No Options API (data(), methods:, mounted()) used in .vue files', () => {
+            const offending = [];
+            for (const f of vueFiles) {
+              const txt = fs.readFileSync(f, 'utf8');
+              if (/\bmethods\s*:\s*\{/.test(txt) || /\bdata\s*\(\s*\)\s*\{/.test(txt) || /\bmounted\s*\(\s*\)\s*\{/.test(txt)) {
+                offending.push(path.relative(rootDir, f));
+              }
+            }
+            if (offending.length > 0) {
+              throw new Error('Options API detected in: ' + offending.join(', '));
+            }
+          });
+
+          test('Uses Composition API primitives (ref, computed, watch, onMounted)', () => {
+            const missing = ['ref', 'computed', 'watch', 'onMounted'].filter(fn => !new RegExp('\\b' + fn + '\\b').test(combinedFrontend));
+            if (missing.length > 0) {
+              throw new Error('Missing Composition API functions: ' + missing.join(', '));
+            }
+          });
+
+          test('Uses Vue Router Composition API (useRoute, useRouter)', () => {
+            if (!/\buseRoute\b/.test(combinedFrontend) || !/\buseRouter\b/.test(combinedFrontend)) {
+              throw new Error('Expected both useRoute() and useRouter() in frontend/src');
+            }
+          });
+
+          test('Uses native Fetch API (no XMLHttpRequest)', () => {
+            if (/\bXMLHttpRequest\b/.test(combinedFrontend)) {
+              throw new Error('XMLHttpRequest is not permitted; use native fetch()');
+            }
+            if (!/\bfetch\s*\(/.test(combinedFrontend)) {
+              throw new Error('No fetch() calls found in frontend/src');
+            }
+          });
+
+          fs.writeFileSync('/home/runner/static-results.json', JSON.stringify(results, null, 2));
           SCRIPT
 
-      # ── Stage 4: HTTP Endpoint Tests ────────────────────────
-      - name: Run HTTP Endpoint Tests
-        id: http
-        working-directory: backend
+      # ── Stage 5: Backend RESTful API Endpoint Tests ───────────────────────
+      - name: Run RESTful API Tests (/api/events & /api/venues)
+        id: api_tests
+        continue-on-error: true
         run: |
           node <<'SCRIPT'
           const http = require('http');
           const fs = require('fs');
 
           const results = [];
-          async function test(name, check) {
-            try { await check(); results.push({ name, pass: true }); }
+          async function test(name, fn) {
+            try { await fn(); results.push({ name, pass: true }); }
             catch (e) { results.push({ name, pass: false, error: e.message }); }
           }
 
-          function fetch(path) {
+          function request(method, path, bodyObj = null) {
             return new Promise((resolve, reject) => {
-              http.get('http://localhost:3000' + path, (res) => {
-                let body = '';
-                res.on('data', chunk => body += chunk);
-                res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body }));
-              }).on('error', reject);
+              const payload = bodyObj ? JSON.stringify(bodyObj) : null;
+              const req = http.request({
+                hostname: 'localhost',
+                port: 3000,
+                path,
+                method,
+                headers: payload ? {
+                  'Content-Type': 'application/json',
+                  'Content-Length': Buffer.byteLength(payload)
+                } : {}
+              }, (res) => {
+                let raw = '';
+                res.on('data', chunk => raw += chunk);
+                res.on('end', () => {
+                  let json = null;
+                  try { json = JSON.parse(raw); } catch (_) {}
+                  resolve({ status: res.statusCode, headers: res.headers, raw, json });
+                });
+              });
+              req.on('error', reject);
+              if (payload) req.write(payload);
+              req.end();
             });
           }
 
           (async () => {
-            // GET /
-            await test('GET / returns 200', async () => {
-              const res = await fetch('/');
+            // 1. GET /api/events
+            await test('GET /api/events returns 200 and { events, total, page, perPage }', async () => {
+              const res = await request('GET', '/api/events?page=1&perPage=6');
               if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET / returns HTML', async () => {
-              const res = await fetch('/');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-            await test('GET / contains nav links', async () => {
-              const res = await fetch('/');
-              if (!res.body.includes('/events') || !res.body.includes('/venues')) throw new Error('Missing nav links');
-            });
-            await test('GET / contains viewport meta', async () => {
-              const res = await fetch('/');
-              if (!res.body.match(/<meta[^>]*viewport/i)) throw new Error('No viewport meta');
-            });
-            await test('GET / references Bootstrap CSS', async () => {
-              const res = await fetch('/');
-              if (!res.body.match(/bootstrap/i)) throw new Error('No Bootstrap CSS reference');
+              if (!res.json || !Array.isArray(res.json.events)) throw new Error('Response missing events array');
+              if (typeof res.json.total !== 'number') throw new Error('Response missing numeric total');
             });
 
-            // GET /events
-            await test('GET /events returns 200', async () => {
-              const res = await fetch('/events');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /events returns HTML', async () => {
-              const res = await fetch('/events');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
+            // 2. GET /api/events filtering & search
+            await test('GET /api/events supports keyword & category filtering', async () => {
+              const res = await request('GET', '/api/events?keyword=AI&category=Workshop');
+              if (res.status !== 200 || !res.json || !Array.isArray(res.json.events)) {
+                throw new Error('Failed keyword/category query');
+              }
             });
 
-            // GET /event/add
-            await test('GET /event/add returns 200', async () => {
-              const res = await fetch('/event/add');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /event/add returns HTML', async () => {
-              const res = await fetch('/event/add');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-            await test('GET /event/add has form elements', async () => {
-              const res = await fetch('/event/add');
-              if (!res.body.match(/<form/i)) throw new Error('No form element');
+            // 3. GET /api/events/:id (existing & 404)
+            await test('GET /api/events/:id returns 200 for seeded event', async () => {
+              const res = await request('GET', '/api/events/507f1f77bcf86cd799439021');
+              if (res.status !== 200 || !res.json) throw new Error('Expected 200 JSON, got ' + res.status);
             });
 
-            // GET /event/edit/:id
-            await test('GET /event/edit/:id returns 200', async () => {
-              const res = await fetch('/event/edit/507f1f77bcf86cd799439011');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /event/edit/:id returns HTML', async () => {
-              const res = await fetch('/event/edit/507f1f77bcf86cd799439011');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-
-            // GET /event/detail/:id
-            await test('GET /event/detail/:id returns 200', async () => {
-              const res = await fetch('/event/detail/507f1f77bcf86cd799439011');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /event/detail/:id returns HTML', async () => {
-              const res = await fetch('/event/detail/507f1f77bcf86cd799439011');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-
-            // GET /venues
-            await test('GET /venues returns 200', async () => {
-              const res = await fetch('/venues');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /venues returns HTML', async () => {
-              const res = await fetch('/venues');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-
-            // GET /venue/add
-            await test('GET /venue/add returns 200', async () => {
-              const res = await fetch('/venue/add');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /venue/add returns HTML', async () => {
-              const res = await fetch('/venue/add');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-            await test('GET /venue/add has form elements', async () => {
-              const res = await fetch('/venue/add');
-              if (!res.body.match(/<form/i)) throw new Error('No form element');
-            });
-
-            // GET /venue/edit/:id
-            await test('GET /venue/edit/:id returns 200', async () => {
-              const res = await fetch('/venue/edit/507f1f77bcf86cd799439011');
-              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
-            });
-            await test('GET /venue/edit/:id returns HTML', async () => {
-              const res = await fetch('/venue/edit/507f1f77bcf86cd799439011');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
-            });
-
-            // GET /nonexistent
-            await test('GET /nonexistent returns 404', async () => {
-              const res = await fetch('/nonexistent');
+            await test('GET /api/events/:id returns 404 when not found', async () => {
+              const res = await request('GET', '/api/events/507f1f77bcf86cd799439099');
               if (res.status !== 404) throw new Error('Expected 404, got ' + res.status);
             });
-            await test('GET /nonexistent returns HTML', async () => {
-              const res = await fetch('/nonexistent');
-              if (!res.headers['content-type'].includes('text/html')) throw new Error('Not HTML');
+
+            // 4. POST, PATCH/PUT, DELETE /api/events lifecycle
+            let createdEventId = null;
+            await test('POST /api/events creates event (201)', async () => {
+              const res = await request('POST', '/api/events', {
+                title: 'CI Test Event',
+                description: 'Created by GitHub Actions pipeline',
+                category: 'Workshop',
+                speaker: 'CI Bot',
+                dateTime: '2026-12-15T10:00:00Z',
+                venue: '507f1f77bcf86cd799439011',
+                capacity: 45,
+                status: 'Upcoming',
+                isHighlighted: false
+              });
+              if (res.status !== 201 && res.status !== 200) throw new Error('Expected 201, got ' + res.status);
+              createdEventId = res.json && (res.json.id || res.json._id || (res.json.event && res.json.event._id));
+              if (!createdEventId) throw new Error('Response did not include created event id');
             });
 
-            const passed = results.filter(r => r.pass).length;
-            const total = results.length;
-            let md = '## HTTP Endpoint Tests\n\n';
-            md += `| Test | Result |\n|------|--------|\n`;
-            for (const r of results) {
-              md += `| ${r.name} | ${r.pass ? 'PASS' : 'FAIL: ' + r.error} |\n`;
-            }
-            md += `\n**${passed}/${total} tests passed**\n`;
-            fs.writeFileSync('/home/runner/http-results.md', md);
-            console.log('http-passed=' + passed);
-            console.log('http-total=' + total);
-          })().catch(e => {
-            console.error('HTTP tests error:', e);
-            process.exit(1);
-          });
+            await test('PATCH /api/events/:id updates event (200)', async () => {
+              if (!createdEventId) throw new Error('Skipped: no createdEventId');
+              let res = await request('PATCH', '/api/events/' + createdEventId, { title: 'CI Test Event Updated' });
+              if (res.status === 404 || res.status === 405) {
+                res = await request('PUT', '/api/events/' + createdEventId, { title: 'CI Test Event Updated' });
+              }
+              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
+            });
+
+            await test('DELETE /api/events/:id deletes event (200)', async () => {
+              if (!createdEventId) throw new Error('Skipped: no createdEventId');
+              const res = await request('DELETE', '/api/events/' + createdEventId);
+              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
+            });
+
+            // 5. GET /api/venues
+            await test('GET /api/venues returns 200 and { venues, total, page, perPage }', async () => {
+              const res = await request('GET', '/api/venues?page=1&perPage=10');
+              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
+              if (!res.json || !Array.isArray(res.json.venues)) throw new Error('Response missing venues array');
+            });
+
+            // 6. GET /api/venues/:id (existing & 404)
+            await test('GET /api/venues/:id returns 200 for seeded venue', async () => {
+              const res = await request('GET', '/api/venues/507f1f77bcf86cd799439011');
+              if (res.status !== 200 || !res.json) throw new Error('Expected 200 JSON, got ' + res.status);
+            });
+
+            await test('GET /api/venues/:id returns 404 when not found', async () => {
+              const res = await request('GET', '/api/venues/507f1f77bcf86cd799439099');
+              if (res.status !== 404) throw new Error('Expected 404, got ' + res.status);
+            });
+
+            // 7. POST, PATCH/PUT, DELETE /api/venues lifecycle
+            let createdVenueId = null;
+            await test('POST /api/venues creates venue (201)', async () => {
+              const res = await request('POST', '/api/venues', {
+                name: 'CI Test Venue',
+                location: 'Building Z, Room 101',
+                capacity: 60,
+                facilities: ['Wi-Fi', 'Projector'],
+                description: 'Temporary test venue'
+              });
+              if (res.status !== 201 && res.status !== 200) throw new Error('Expected 201, got ' + res.status);
+              createdVenueId = res.json && (res.json.id || res.json._id || (res.json.venue && res.json.venue._id));
+              if (!createdVenueId) throw new Error('Response did not include created venue id');
+            });
+
+            await test('PATCH /api/venues/:id updates venue (200)', async () => {
+              if (!createdVenueId) throw new Error('Skipped: no createdVenueId');
+              let res = await request('PATCH', '/api/venues/' + createdVenueId, { name: 'CI Test Venue Updated' });
+              if (res.status === 404 || res.status === 405) {
+                res = await request('PUT', '/api/venues/' + createdVenueId, { name: 'CI Test Venue Updated' });
+              }
+              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
+            });
+
+            await test('DELETE /api/venues/:id deletes venue (200)', async () => {
+              if (!createdVenueId) throw new Error('Skipped: no createdVenueId');
+              const res = await request('DELETE', '/api/venues/' + createdVenueId);
+              if (res.status !== 200) throw new Error('Expected 200, got ' + res.status);
+            });
+
+            fs.writeFileSync('/home/runner/api-results.json', JSON.stringify(results, null, 2));
+          })();
           SCRIPT
 
-      # ── Stage 5: Browser E2E Tests ──────────────────────────
-      - name: Install Playwright
-        id: playwright
-        continue-on-error: true
-        working-directory: backend
+      # ── Stage 6: Playwright E2E Tests & Screenshot Capture ────────────────
+      - name: Install Playwright Chromium
+        working-directory: ${{ steps.dirs.outputs.backend_dir }}
         run: |
-          npm install playwright --no-save 2>&1 || echo "npm_failed=true" >> $GITHUB_OUTPUT
-          if [ "${{ steps.playwright.outputs.npm_failed }}" != "true" ]; then
-            npx playwright install chromium 2>&1 || echo "browser_failed=true" >> $GITHUB_OUTPUT
-          fi
-          echo "done=true" >> $GITHUB_OUTPUT
+          npm install playwright --no-save
+          npx playwright install --with-deps chromium
 
-      - name: Run Browser E2E Tests
-        id: e2e
-        continue-on-error: true
-        working-directory: backend
+      - name: Capture Desktop & Mobile Screenshots + E2E Checks
+        working-directory: ${{ steps.dirs.outputs.backend_dir }}
+        env:
+          APP_BASE_URL: ${{ steps.frontend_server.outputs.app_url || 'http://localhost:3000' }}
         run: |
           node <<'SCRIPT'
           const fs = require('fs');
+          const path = require('path');
+          const { chromium } = require('playwright');
 
-          const results = [];
-          async function test(name, check) {
-            try { await check(); results.push({ name, pass: true }); }
-            catch (e) { results.push({ name, pass: false, error: e.message }); }
+          const baseUrl = process.env.APP_BASE_URL || 'http://localhost:5173';
+          const outDir = '/home/runner/report-artifact/screenshots';
+          fs.mkdirSync(outDir, { recursive: true });
+
+          const routes = [
+            {
+              slug: '01-homepage',
+              title: '1. Homepage (/)',
+              route: '/',
+              description: 'Highlighted carousel, latest 6, trending 6, and upcoming 6 events'
+            },
+            {
+              slug: '02-events-list',
+              title: '2. Events List (/events)',
+              route: '/events',
+              description: 'Paginated events list with keyword search and category filter'
+            },
+            {
+              slug: '03-event-detail',
+              title: '3. Event Detail (/event/detail/:id)',
+              route: '/event/detail/507f1f77bcf86cd799439021',
+              description: 'Complete event details, speaker, venue info, and related events'
+            },
+            {
+              slug: '04-event-add',
+              title: '4. Add Event (/event/add)',
+              route: '/event/add',
+              description: 'Reactive v-model form to create a new event with validation'
+            },
+            {
+              slug: '05-event-edit',
+              title: '5. Edit Event (/event/edit/:id)',
+              route: '/event/edit/507f1f77bcf86cd799439021',
+              description: 'Pre-filled v-model form to update or delete an existing event'
+            },
+            {
+              slug: '06-venues-list',
+              title: '6. Venues List (/venues)',
+              route: '/venues',
+              description: 'Paginated venues list with facilities, capacity, and edit links'
+            },
+            {
+              slug: '07-venue-add',
+              title: '7. Add Venue (/venue/add)',
+              route: '/venue/add',
+              description: 'Reactive v-model form to create a new venue'
+            },
+            {
+              slug: '08-venue-edit',
+              title: '8. Edit Venue (/venue/edit/:id)',
+              route: '/venue/edit/507f1f77bcf86cd799439011',
+              description: 'Pre-filled v-model form to update or delete an existing venue'
+            }
+          ];
+
+          const e2eResults = [];
+          const screenshotManifest = [];
+
+          async function test(name, fn) {
+            try { await fn(); e2eResults.push({ name, pass: true }); }
+            catch (e) { e2eResults.push({ name, pass: false, error: e.message }); }
           }
-
-          const screenshots = [];
 
           (async () => {
-            const { chromium } = require('playwright');
             const browser = await chromium.launch();
 
-            // Desktop tests
-            const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
-            const page = await context.newPage();
+            for (const item of routes) {
+              const targetUrl = baseUrl + item.route;
+              const desktopFile = `${item.slug}-desktop.png`;
+              const mobileFile = `${item.slug}-mobile.png`;
+              const consoleErrors = [];
+              const apiCalls = [];
 
-            await test('Homepage loads', async () => {
-              const response = await page.goto('http://localhost:3000/');
-              if (!response || response.status() !== 200) throw new Error('Failed to load homepage');
-            });
-            await test('Homepage has carousel', async () => {
-              await page.goto('http://localhost:3000/');
-              const carousel = await page.locator('.carousel, [data-bs-ride="carousel"]').count();
-              if (carousel === 0) throw new Error('No carousel found');
-            });
-            await test('Navbar has links to /, /events, /venues', async () => {
-              await page.goto('http://localhost:3000/');
-              const navHrefs = await page.locator('nav a').evaluateAll(els => els.map(e => e.href));
-              const hasAll = navHrefs.some(h => h.endsWith('/') || h.endsWith('/index')) &&
-                             navHrefs.some(h => h.includes('/events')) &&
-                             navHrefs.some(h => h.includes('/venues'));
-              if (!hasAll) throw new Error('Missing nav links: ' + JSON.stringify(navHrefs));
-            });
-            await test('Navigation to Events page works', async () => {
-              await page.goto('http://localhost:3000/');
-              try { await page.click('nav a[href*="/events"]'); } catch(e) {}
-              await page.waitForTimeout(500);
-              const url = page.url();
-              if (!url.includes('/events') && !url.endsWith('/')) throw new Error('Navigation failed');
-            });
-            await test('Navigation to Venues page works', async () => {
-              await page.goto('http://localhost:3000/');
-              try { await page.click('nav a[href*="/venues"]'); } catch(e) {}
-              await page.waitForTimeout(500);
-              const url = page.url();
-              if (!url.includes('/venues') && !url.endsWith('/')) throw new Error('Navigation failed');
-            });
-            await test('Add Event form has input elements', async () => {
-              await page.goto('http://localhost:3000/event/add');
-              const inputs = await page.locator('input, select, textarea').count();
-              if (inputs === 0) throw new Error('No form inputs found');
-            });
-            await test('Edit Event form has input elements', async () => {
-              await page.goto('http://localhost:3000/event/edit/507f1f77bcf86cd799439011');
-              const inputs = await page.locator('input, select, textarea').count();
-              if (inputs === 0) throw new Error('No form inputs found');
-            });
-            await test('Add Venue form has input elements', async () => {
-              await page.goto('http://localhost:3000/venue/add');
-              const inputs = await page.locator('input, select, textarea').count();
-              if (inputs === 0) throw new Error('No form inputs found');
-            });
-            await test('Edit Venue form has input elements', async () => {
-              await page.goto('http://localhost:3000/venue/edit/507f1f77bcf86cd799439011');
-              const inputs = await page.locator('input, select, textarea').count();
-              if (inputs === 0) throw new Error('No form inputs found');
-            });
-            await test('404 page for unknown route', async () => {
-              await page.goto('http://localhost:3000/nonexistent');
-              const content = await page.content();
-              if (!content.includes('404') && !content.toLowerCase().includes('not found')) throw new Error('No 404 page content');
-            });
+              // 1. Desktop Capture (1280x720)
+              const dCtx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+              const dPage = await dCtx.newPage();
+              dPage.on('dialog', dialog => dialog.dismiss().catch(() => {}));
+              dPage.on('console', msg => {
+                if (msg.type() === 'error') consoleErrors.push(msg.text());
+              });
+              dPage.on('response', res => {
+                if (res.url().includes('/api/')) {
+                  apiCalls.push({ url: res.url().replace(/^https?:\/\/[^/]+/, ''), status: res.status() });
+                }
+              });
 
-            // Responsive design - mobile 375px
-            await test('Mobile 375px - no horizontal overflow', async () => {
-              const mobileContext = await browser.newContext({ viewport: { width: 375, height: 667 } });
-              const mobilePage = await mobileContext.newPage();
-              await mobilePage.goto('http://localhost:3000/');
-              await mobilePage.waitForTimeout(500);
-              const scrollWidth = await mobilePage.evaluate(() => document.documentElement.scrollWidth);
-              const clientWidth = await mobilePage.evaluate(() => document.documentElement.clientWidth);
-              await mobileContext.close();
-              if (scrollWidth > clientWidth) throw new Error('Overflow: scrollWidth=' + scrollWidth + ', clientWidth=' + clientWidth);
-            });
+              let status = 'OK';
+              try {
+                await dPage.goto(targetUrl, { waitUntil: 'networkidle', timeout: 15000 });
+              } catch (e) {
+                status = 'TIMEOUT/WARN: ' + e.message.split('\n')[0];
+              }
+              await dPage.waitForTimeout(1000);
+              await dPage.screenshot({ path: path.join(outDir, desktopFile), fullPage: true });
 
-            // Responsive design - tablet 768px
-            await test('Tablet 768px - no horizontal overflow', async () => {
-              const tabletContext = await browser.newContext({ viewport: { width: 768, height: 1024 } });
-              const tabletPage = await tabletContext.newPage();
-              await tabletPage.goto('http://localhost:3000/');
-              await tabletPage.waitForTimeout(500);
-              const scrollWidth = await tabletPage.evaluate(() => document.documentElement.scrollWidth);
-              const clientWidth = await tabletPage.evaluate(() => document.documentElement.clientWidth);
-              await tabletContext.close();
-              if (scrollWidth > clientWidth) throw new Error('Overflow: scrollWidth=' + scrollWidth + ', clientWidth=' + clientWidth);
-            });
+              // Run page-specific E2E assertions on the live desktop DOM
+              if (item.route === '/') {
+                await test('Homepage renders navbar & Bootstrap styling', async () => {
+                  const navCount = await dPage.locator('nav, .navbar').count();
+                  if (navCount === 0) throw new Error('No <nav> or .navbar found on Homepage');
+                });
+                await test('Homepage fetches /api/events and renders event cards/carousel', async () => {
+                  const bodyText = await dPage.locator('body').innerText();
+                  if (!bodyText.includes('AI') && !bodyText.includes('Workshop') && !bodyText.includes('Seminar')) {
+                    throw new Error('Seeded events not visible on Homepage after networkidle');
+                  }
+                });
+              } else if (item.route === '/events') {
+                await test('Events List (/events) renders seeded events', async () => {
+                  const bodyText = await dPage.locator('body').innerText();
+                  if (!bodyText.includes('Workshop') && !bodyText.includes('Seminar')) {
+                    throw new Error('Seeded events not rendered on /events');
+                  }
+                });
+              } else if (item.route === '/event/detail/507f1f77bcf86cd799439021') {
+                await test('Event Detail (/event/detail/:id) displays seeded event details', async () => {
+                  const bodyText = await dPage.locator('body').innerText();
+                  if (!bodyText.includes('AI') && !bodyText.includes('Smith')) {
+                    throw new Error('Event detail page did not display seeded event title/speaker');
+                  }
+                });
+              } else if (item.route === '/event/add' || item.route === '/venue/add') {
+                await test(`Form inputs exist on ${item.route}`, async () => {
+                  const count = await dPage.locator('input, select, textarea').count();
+                  if (count === 0) throw new Error(`No form inputs found on ${item.route}`);
+                });
+              } else if (item.route === '/event/edit/507f1f77bcf86cd799439021') {
+                await test('Edit Event (/event/edit/:id) pre-fills form inputs', async () => {
+                  const count = await dPage.locator('input, select, textarea').count();
+                  if (count === 0) throw new Error('No form inputs found on /event/edit/:id');
+                });
+              } else if (item.route === '/venues') {
+                await test('Venues List (/venues) renders seeded venues', async () => {
+                  const bodyText = await dPage.locator('body').innerText();
+                  if (!bodyText.includes('Auditorium') && !bodyText.includes('Seminar Room')) {
+                    throw new Error('Seeded venues not rendered on /venues');
+                  }
+                });
+              }
 
-            // Viewport meta tag
-            await test('Viewport meta tag present', async () => {
-              await page.goto('http://localhost:3000/');
-              const hasViewport = await page.locator('meta[name="viewport"]').count();
-              if (hasViewport === 0) throw new Error('No viewport meta tag');
-            });
+              await dCtx.close();
 
-            // Bootstrap CSS referenced
-            await test('Bootstrap CSS referenced', async () => {
-              await page.goto('http://localhost:3000/');
-              const bootstrapLinks = await page.locator('link[href*="bootstrap"], link[href*="bootstrap.min"]').count();
-              const bootstrapScripts = await page.locator('script[src*="bootstrap"]').count();
-              if (bootstrapLinks === 0 && bootstrapScripts === 0) throw new Error('No Bootstrap CSS reference found');
-            });
+              // 2. Mobile Capture (375x667) + Horizontal Overflow Check
+              const mCtx = await browser.newContext({ viewport: { width: 375, height: 667 } });
+              const mPage = await mCtx.newPage();
+              mPage.on('dialog', dialog => dialog.dismiss().catch(() => {}));
+              try {
+                await mPage.goto(targetUrl, { waitUntil: 'networkidle', timeout: 15000 });
+              } catch (_) {}
+              await mPage.waitForTimeout(1000);
+              await mPage.screenshot({ path: path.join(outDir, mobileFile), fullPage: true });
+
+              const overflow = await mPage.evaluate(() => {
+                return {
+                  scrollWidth: document.documentElement.scrollWidth,
+                  clientWidth: document.documentElement.clientWidth
+                };
+              });
+              await mCtx.close();
+
+              screenshotManifest.push({
+                ...item,
+                targetUrl,
+                status,
+                desktopFile,
+                mobileFile,
+                consoleErrors: consoleErrors.slice(0, 5),
+                apiCalls,
+                mobileOverflow: overflow.scrollWidth > overflow.clientWidth + 5
+                  ? `${overflow.scrollWidth}px > ${overflow.clientWidth}px`
+                  : 'None (Responsive)'
+              });
+            }
 
             await browser.close();
-
-            // Capture screenshots of all assignment pages at desktop and mobile viewports
-            const screenshotFiles = [];
-            fs.mkdirSync('/home/runner/screenshots', { recursive: true });
-            try {
-              const browser2 = await chromium.launch();
-              const pages = [
-                { url: 'http://localhost:3000/', name: 'homepage' },
-                { url: 'http://localhost:3000/events', name: 'events' },
-                { url: 'http://localhost:3000/event/add', name: 'event-add' },
-                { url: 'http://localhost:3000/event/edit/507f1f77bcf86cd799439011', name: 'event-edit' },
-                { url: 'http://localhost:3000/event/detail/507f1f77bcf86cd799439011', name: 'event-detail' },
-                { url: 'http://localhost:3000/venues', name: 'venues' },
-                { url: 'http://localhost:3000/venue/add', name: 'venue-add' },
-                { url: 'http://localhost:3000/venue/edit/507f1f77bcf86cd799439011', name: 'venue-edit' },
-              ];
-              for (const { url, name } of pages) {
-                // Desktop screenshot
-                const dc = await browser2.newContext({ viewport: { width: 1280, height: 720 } });
-                const dp = await dc.newPage();
-                await dp.goto(url);
-                await dp.waitForTimeout(500);
-                const dPath = `/home/runner/screenshots/${name}-desktop.png`;
-                await dp.screenshot({ path: dPath });
-                await dc.close();
-                // Mobile screenshot
-                const mc = await browser2.newContext({ viewport: { width: 375, height: 667 } });
-                const mp = await mc.newPage();
-                await mp.goto(url);
-                await mp.waitForTimeout(500);
-                const mPath = `/home/runner/screenshots/${name}-mobile.png`;
-                await mp.screenshot({ path: mPath });
-                await mc.close();
-                screenshotFiles.push(dPath, mPath);
-              }
-              await browser2.close();
-              fs.writeFileSync('/home/runner/screenshot-files.txt', screenshotFiles.join('\n'));
-            } catch (e) {
-              console.error('Screenshot capture error:', e.message);
-            }
-
-            const passed = results.filter(r => r.pass).length;
-            const total = results.length;
-            let md = '## Browser E2E Tests\n\n';
-            md += `| Test | Result |\n|------|--------|\n`;
-            for (const r of results) {
-              md += `| ${r.name} | ${r.pass ? 'PASS' : 'FAIL: ' + r.error} |\n`;
-            }
-            md += `\n**${passed}/${total} tests passed**\n`;
-            fs.writeFileSync('/home/runner/e2e-results.md', md);
-            console.log('e2e-passed=' + passed);
-            console.log('e2e-total=' + total);
-          })().catch(e => {
-            console.error('E2E tests error:', e);
-            fs.writeFileSync('/home/runner/e2e-results.md', '## Browser E2E Tests\n\nSKIPPED (Playwright not available)\n');
-            console.log('e2e-passed=0');
-            console.log('e2e-total=0');
-          });
+            fs.writeFileSync('/home/runner/e2e-results.json', JSON.stringify(e2eResults, null, 2));
+            fs.writeFileSync('/home/runner/screenshots-manifest.json', JSON.stringify(screenshotManifest, null, 2));
+          })();
           SCRIPT
 
-      # ── Stage 6: Report Compilation ─────────────────────────
-      - name: Compile Test Report
-        id: report
-        working-directory: backend
+      # ── Stage 7: Generate HTML & Markdown Feedback Reports ────────────────
+      - name: Generate Visual HTML & Markdown Feedback Reports
+        if: always()
         run: |
           node <<'SCRIPT'
           const fs = require('fs');
+          const path = require('path');
 
-          let unitMd = '';
-          let httpMd = '';
-          let e2eMd = '';
-
-          try { unitMd = fs.readFileSync('/home/runner/unit-results.md', 'utf8'); } catch(e) { unitMd = '## Unit Tests\n\nNOT RUN\n'; }
-          try { httpMd = fs.readFileSync('/home/runner/http-results.md', 'utf8'); } catch(e) { httpMd = '## HTTP Endpoint Tests\n\nNOT RUN\n'; }
-          try { e2eMd = fs.readFileSync('/home/runner/e2e-results.md', 'utf8'); } catch(e) { e2eMd = '## Browser E2E Tests\n\nNOT RUN\n'; }
-
-          // Extract pass/totals
-          function extract(md) {
-            const m = md.match(/\*\*(\d+)\/(\d+) tests passed\*\*/);
-            return m ? { passed: parseInt(m[1]), total: parseInt(m[2]) } : { passed: 0, total: 0 };
+          function readJson(file) {
+            try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+            catch (_) { return []; }
           }
 
-          const unitStats = extract(unitMd);
-          const httpStats = extract(httpMd);
-          const e2eStats = extract(e2eMd);
+          const staticResults = readJson('/home/runner/static-results.json');
+          const apiResults = readJson('/home/runner/api-results.json');
+          const e2eResults = readJson('/home/runner/e2e-results.json');
+          const manifest = readJson('/home/runner/screenshots-manifest.json');
 
-          const overallPassed = unitStats.passed + httpStats.passed + e2eStats.passed;
-          const overallTotal = unitStats.total + httpStats.total + e2eStats.total;
-          const verdict = overallTotal > 0 && overallPassed === overallTotal ? 'ALL PASSED' : 'SOME TESTS FAILED';
+          function summarize(arr) {
+            const passed = arr.filter(r => r.pass).length;
+            return { passed, total: arr.length };
+          }
 
-          // Build screenshots section with desktop and mobile images (relative paths)
-          let screenshotMd = '';
-          try {
-            const screenshotFiles = fs.readFileSync('/home/runner/screenshot-files.txt', 'utf8').trim().split('\n').filter(Boolean);
-            if (screenshotFiles.length > 0) {
-              screenshotMd = '## Screenshots\n\n';
-              for (const fullPath of screenshotFiles) {
-                const name = fullPath.split('/').pop();
-                screenshotMd += `![${name}](screenshots/${name})\n\n`;
-              }
+          const sStat = summarize(staticResults);
+          const aStat = summarize(apiResults);
+          const eStat = summarize(e2eResults);
+          const totalPassed = sStat.passed + aStat.passed + eStat.passed;
+          const totalCount = sStat.total + aStat.total + eStat.total;
+
+          function renderMdTable(title, arr) {
+            let md = `## ${title}\n\n| Check | Status |\n|---|---|\n`;
+            for (const r of arr) {
+              md += `| ${r.name} | ${r.pass ? '✅ PASS' : '❌ FAIL: ' + r.error} |\n`;
             }
-          } catch(e) {
-            screenshotMd = '## Screenshots\n\nNo screenshots captured.\n';
+            return md + '\n';
           }
 
-          const reportLines = [];
-          reportLines.push('# Test Report');
-          reportLines.push('');
-          reportLines.push('## Summary');
-          reportLines.push('');
-          reportLines.push('| Category | Passed | Total | Status |');
-          reportLines.push('|----------|--------|-------|--------|');
-          reportLines.push(`| Unit Tests | ${unitStats.passed} | ${unitStats.total} | ${unitStats.passed === unitStats.total ? 'PASS' : 'FAIL'} |`);
-          reportLines.push(`| HTTP Endpoint Tests | ${httpStats.passed} | ${httpStats.total} | ${httpStats.passed === httpStats.total ? 'PASS' : 'FAIL'} |`);
-          reportLines.push(`| Browser E2E Tests | ${e2eStats.passed} | ${e2eStats.total} | ${e2eStats.passed === e2eStats.total ? 'PASS' : 'FAIL'} |`);
-          reportLines.push('');
-          reportLines.push(`**Overall: ${verdict} (${overallPassed}/${overallTotal})**`);
-          reportLines.push('');
-          reportLines.push('---');
-          reportLines.push('');
-          reportLines.push(unitMd);
-          reportLines.push('');
-          reportLines.push('---');
-          reportLines.push('');
-          reportLines.push(httpMd);
-          reportLines.push('');
-          reportLines.push('---');
-          reportLines.push('');
-          reportLines.push(e2eMd);
-          reportLines.push('');
-          reportLines.push('---');
-          reportLines.push('');
-          reportLines.push(screenshotMd);
-          const report = reportLines.join('\n');
+          // 1. Build Markdown Report (for Job Summary + Artifact)
+          let md = `# COMP3047 Assignment 2 — Automated Feedback Report\n\n`;
+          md += `- **Repository:** \`${process.env.GITHUB_REPOSITORY || 'local'}\`\n`;
+          md += `- **Commit / Ref:** \`${process.env.GITHUB_REF_NAME || 'HEAD'}\` (\`${(process.env.GITHUB_SHA || '').slice(0, 7)}\`)\n`;
+          md += `- **Generated At (UTC):** ${new Date().toISOString()}\n\n`;
+          md += `## Overall Summary (${totalPassed}/${totalCount} Checks Passed)\n\n`;
+          md += `| Category | Passed | Total |\n|---|---|---|\n`;
+          md += `| Vue 3 & Lab 5/6 Static Compliance | ${sStat.passed} | ${sStat.total} |\n`;
+          md += `| Express RESTful API Endpoints | ${aStat.passed} | ${aStat.total} |\n`;
+          md += `| Playwright Browser E2E Checks | ${eStat.passed} | ${eStat.total} |\n\n`;
+          md += `> **How to view your application screenshots:** Download the **\`assignment2-feedback-report\`** artifact ZIP from the bottom of this GitHub Actions run page, unzip it, and open **\`test-report.html\`** in your browser to inspect your Desktop & Mobile screenshots side-by-side.\n\n`;
 
-          fs.writeFileSync('/home/runner/test-report.md', report);
-          console.log('Report compiled successfully');
+          md += renderMdTable('1. Vue 3 Composition API & Lab 5/6 Compliance', staticResults);
+          md += renderMdTable('2. Backend RESTful API Tests (`/api/events` & `/api/venues`)', apiResults);
+          md += renderMdTable('3. Browser E2E Checks', e2eResults);
+
+          md += `## 4. Captured Route Diagnostics & Screenshot Index\n\n`;
+          md += `| Page / Route | API Calls Observed | Console Errors | Mobile Overflow | Desktop PNG | Mobile PNG |\n|---|---|---|---|---|---|\n`;
+          for (const m of manifest) {
+            const apis = m.apiCalls.map(a => `\`${a.status} ${a.url}\``).join(', ') || 'None';
+            const errs = m.consoleErrors.length === 0 ? '0' : `${m.consoleErrors.length} error(s)`;
+            md += `| **${m.title}** | ${apis} | ${errs} | ${m.mobileOverflow} | \`screenshots/${m.desktopFile}\` | \`screenshots/${m.mobileFile}\` |\n`;
+          }
+
+          fs.writeFileSync('/home/runner/report-artifact/test-report.md', md);
+
+          // 2. Build Self-Contained Visual HTML Report (with embedded base64 images so it works even as a single file)
+          function escapeHtml(str) {
+            return String(str || '')
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/"/g, '&quot;');
+          }
+
+          function renderHtmlRows(arr) {
+            return arr.map(r => `
+              <tr>
+                <td>${escapeHtml(r.name)}</td>
+                <td><span class="badge ${r.pass ? 'pass' : 'fail'}">${r.pass ? 'PASS' : 'FAIL'}</span></td>
+                <td>${r.error ? `<code>${escapeHtml(r.error)}</code>` : '—'}</td>
+              </tr>`).join('');
+          }
+
+          const cardsHtml = manifest.map(m => {
+            const dPath = path.join('/home/runner/report-artifact/screenshots', m.desktopFile);
+            const mPath = path.join('/home/runner/report-artifact/screenshots', m.mobileFile);
+            const dB64 = fs.existsSync(dPath) ? fs.readFileSync(dPath).toString('base64') : '';
+            const mB64 = fs.existsSync(mPath) ? fs.readFileSync(mPath).toString('base64') : '';
+            const apis = m.apiCalls.map(a => `<span class="tag">${escapeHtml(a.status + ' ' + a.url)}</span>`).join(' ') || '<em>No /api/* requests detected</em>';
+            const errs = m.consoleErrors.length
+              ? `<div class="console-err"><strong>Console Errors:</strong><ul>${m.consoleErrors.map(e => `<li>${escapeHtml(e)}</li>`).join('')}</ul></div>`
+              : '';
+            return `
+              <section class="shot-card">
+                <div class="shot-header">
+                  <div>
+                    <h3>${escapeHtml(m.title)}</h3>
+                    <p>${escapeHtml(m.description)} — <code>${escapeHtml(m.targetUrl)}</code></p>
+                  </div>
+                  <div class="meta-pills">
+                    <span class="pill">Mobile Overflow: ${escapeHtml(m.mobileOverflow)}</span>
+                  </div>
+                </div>
+                <div class="api-bar"><strong>API Calls on Mount:</strong> ${apis}</div>
+                ${errs}
+                <div class="shot-grid">
+                  <div class="shot-col desktop">
+                    <h4>Desktop Viewport (1280×720) — <code>screenshots/${escapeHtml(m.desktopFile)}</code></h4>
+                    ${dB64 ? `<img src="data:image/png;base64,${dB64}" alt="${escapeHtml(m.title)} desktop" />` : '<p>No screenshot</p>'}
+                  </div>
+                  <div class="shot-col mobile">
+                    <h4>Mobile Viewport (375×667) — <code>screenshots/${escapeHtml(m.mobileFile)}</code></h4>
+                    ${mB64 ? `<img src="data:image/png;base64,${mB64}" alt="${escapeHtml(m.title)} mobile" />` : '<p>No screenshot</p>'}
+                  </div>
+                </div>
+              </section>`;
+          }).join('\n');
+
+          const html = `<!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>COMP3047 Assignment 2 — Pipeline Feedback & Screenshots</title>
+            <style>
+              body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 24px; background: #f8fafc; color: #0f172a; }
+              .container { max-width: 1400px; margin: 0 auto; }
+              header { background: #1e293b; color: #fff; padding: 24px; border-radius: 12px; margin-bottom: 24px; }
+              header h1 { margin: 0 0 8px 0; font-size: 24px; }
+              header p { margin: 4px 0; color: #cbd5e1; font-size: 14px; }
+              .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; margin-bottom: 24px; }
+              .stat-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; }
+              .stat-card h3 { margin: 0 0 8px 0; font-size: 14px; color: #64748b; text-transform: uppercase; }
+              .stat-card .num { font-size: 28px; font-weight: 700; color: #0f172a; }
+              table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; margin-bottom: 24px; border: 1px solid #e2e8f0; }
+              th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+              th { background: #f1f5f9; font-weight: 600; }
+              .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+              .badge.pass { background: #dcfce7; color: #166534; }
+              .badge.fail { background: #fee2e2; color: #991b1b; }
+              .shot-card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+              .shot-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; border-bottom: 1px solid #f1f5f9; padding-bottom: 12px; margin-bottom: 12px; }
+              .shot-header h3 { margin: 0 0 4px 0; font-size: 18px; }
+              .shot-header p { margin: 0; color: #64748b; font-size: 13px; }
+              .api-bar { font-size: 13px; margin-bottom: 12px; color: #334155; }
+              .tag { display: inline-block; background: #e0f2fe; color: #0369a1; padding: 2px 8px; border-radius: 4px; font-family: monospace; font-size: 12px; margin-right: 6px; }
+              .pill { display: inline-block; background: #f1f5f9; color: #334155; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; }
+              .console-err { background: #fef2f2; border: 1px solid #fecaca; color: #991b1b; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; font-size: 13px; }
+              .shot-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; align-items: start; }
+              .shot-col h4 { margin: 0 0 8px 0; font-size: 13px; color: #475569; }
+              .shot-col img { width: 100%; height: auto; border: 1px solid #cbd5e1; border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <header>
+                <h1>COMP3047 Assignment 2 — Application Feedback & Screenshot Report</h1>
+                <p>Repository: <strong>${escapeHtml(process.env.GITHUB_REPOSITORY || 'local')}</strong> | Ref: <strong>${escapeHtml(process.env.GITHUB_REF_NAME || 'HEAD')}</strong> | Generated: ${escapeHtml(new Date().toISOString())}</p>
+              </header>
+
+              <div class="summary-grid">
+                <div class="stat-card"><h3>Overall Checks</h3><div class="num">${totalPassed} / ${totalCount}</div></div>
+                <div class="stat-card"><h3>Vue 3 & Lab 5/6 Compliance</h3><div class="num">${sStat.passed} / ${sStat.total}</div></div>
+                <div class="stat-card"><h3>Express REST API</h3><div class="num">${aStat.passed} / ${aStat.total}</div></div>
+                <div class="stat-card"><h3>Playwright E2E & Pages</h3><div class="num">${eStat.passed} / ${eStat.total}</div></div>
+              </div>
+
+              <h2>1. Vue 3 Composition API & Lab 5/6 Compliance</h2>
+              <table><thead><tr><th>Check</th><th>Result</th><th>Details</th></tr></thead><tbody>${renderHtmlRows(staticResults)}</tbody></table>
+
+              <h2>2. Backend RESTful API Endpoints (/api/events & /api/venues)</h2>
+              <table><thead><tr><th>Check</th><th>Result</th><th>Details</th></tr></thead><tbody>${renderHtmlRows(apiResults)}</tbody></table>
+
+              <h2>3. Browser E2E Checks</h2>
+              <table><thead><tr><th>Check</th><th>Result</th><th>Details</th></tr></thead><tbody>${renderHtmlRows(e2eResults)}</tbody></table>
+
+              <h2>4. Application Screenshots (Desktop 1280×720 & Mobile 375×667)</h2>
+              ${cardsHtml}
+            </div>
+          </body>
+          </html>`;
+
+          fs.writeFileSync('/home/runner/report-artifact/test-report.html', html);
           SCRIPT
 
-      # ── Stage 7: Upload Report and Screenshots ──────────
-      - name: Upload Test Report and Screenshots
+      # ── Stage 8: Publish Job Summary & Upload Artifact ────────────────────
+      - name: Publish Summary to GitHub Actions UI
+        if: always()
+        run: |
+          if [ -f /home/runner/report-artifact/test-report.md ]; then
+            cat /home/runner/report-artifact/test-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload Feedback Report & Screenshots Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-report-${{ github.run_id }}
+          name: assignment2-feedback-report-${{ github.run_id }}
           path: |
-            /home/runner/test-report.md
-            /home/runner/screenshots/
+            /home/runner/report-artifact/test-report.html
+            /home/runner/report-artifact/test-report.md
+            /home/runner/report-artifact/screenshots/
           retention-days: 30
-
-      - name: Publish Test Report to Job Summary
-        if: always()
-        run: |
-          if [ -f /home/runner/test-report.md ]; then
-            echo "::notice title=Test Report Complete::Check the artifacts for the full report and screenshots"
-            cat /home/runner/test-report.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No test report found" >> "$GITHUB_STEP_SUMMARY"
-          fi
